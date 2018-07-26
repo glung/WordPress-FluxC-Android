@@ -69,33 +69,34 @@ constructor(
         add(request)
     }
 
-    internal suspend fun fetchActivityAsync(site: SiteModel, number: Int, offset: Int)
-            : Action<ActivityLogStore.FetchedActivityLogPayload> {
-        return suspendCoroutine { cont ->
-            val url = WPCOMV2.sites.site(site.siteId).activity.url
-            val pageNumber = offset / number + 1
-            val params = mapOf("page" to pageNumber.toString(), "number" to number.toString())
-            val request = wpComGsonRequestBuilder.buildGetRequest(
-                    url, params, ActivitiesResponse::class.java,
-                    { response ->
-                        val activities = response.current?.orderedItems ?: listOf()
-                        val totalItems = response.totalItems ?: 0
-                        val payload = buildActivityPayload(activities, site, totalItems, number, offset)
-                        cont.resume(ActivityLogActionBuilder.newFetchedActivitiesAction(payload))
-                    },
-                    { networkError ->
-                        val errorType = genericToError(
-                                networkError,
-                                ActivityLogErrorType.GENERIC_ERROR,
-                                ActivityLogErrorType.INVALID_RESPONSE,
-                                ActivityLogErrorType.AUTHORIZATION_REQUIRED
-                        )
-                        val error = ActivityError(errorType, networkError.message)
-                        val payload = FetchedActivityLogPayload(error, site, number = number, offset = offset)
-                        cont.resume(ActivityLogActionBuilder.newFetchedActivitiesAction(payload))
-                    })
-            add(request)
-        }
+    internal suspend fun fetchActivities(
+        site: SiteModel,
+        number: Int,
+        offset: Int
+    ): Action<ActivityLogStore.FetchedActivityLogPayload> = suspendCoroutine { cont ->
+        val url = WPCOMV2.sites.site(site.siteId).activity.url
+        val pageNumber = offset / number + 1
+        val params = mapOf("page" to pageNumber.toString(), "number" to number.toString())
+        val request = wpComGsonRequestBuilder.buildGetRequest(
+                url, params, ActivitiesResponse::class.java,
+                { response ->
+                    val activities = response.current?.orderedItems ?: listOf()
+                    val totalItems = response.totalItems ?: 0
+                    val payload = buildActivityPayload(activities, site, totalItems, number, offset)
+                    cont.resume(ActivityLogActionBuilder.newFetchedActivitiesAction(payload))
+                },
+                { networkError ->
+                    val errorType = genericToError(
+                            networkError,
+                            ActivityLogErrorType.GENERIC_ERROR,
+                            ActivityLogErrorType.INVALID_RESPONSE,
+                            ActivityLogErrorType.AUTHORIZATION_REQUIRED
+                    )
+                    val error = ActivityError(errorType, networkError.message)
+                    val payload = FetchedActivityLogPayload(error, site, number = number, offset = offset)
+                    cont.resume(ActivityLogActionBuilder.newFetchedActivitiesAction(payload))
+                })
+        add(request)
     }
 
     fun fetchActivityRewind(site: SiteModel) {

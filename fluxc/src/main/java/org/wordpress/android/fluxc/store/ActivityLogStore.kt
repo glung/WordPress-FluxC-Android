@@ -1,8 +1,7 @@
 package org.wordpress.android.fluxc.store
 
 import com.yarolegovich.wellsql.SelectQuery
-import kotlinx.coroutines.experimental.DefaultDispatcher
-import kotlinx.coroutines.experimental.async
+import kotlinx.coroutines.experimental.CommonPool
 import kotlinx.coroutines.experimental.withContext
 import org.greenrobot.eventbus.Subscribe
 import org.greenrobot.eventbus.ThreadMode
@@ -36,7 +35,7 @@ class ActivityLogStore
         when (actionType) {
             ActivityLogAction.FETCH_ACTIVITIES -> fetchActivities(action.payload as FetchActivityLogPayload)
             ActivityLogAction.FETCHED_ACTIVITIES ->
-                storeActivityLog(action.payload as FetchedActivityLogPayload, actionType)
+                this.storeActivityLog(action.payload as FetchedActivityLogPayload, actionType)
             ActivityLogAction.FETCH_REWIND_STATE -> fetchActivitiesRewind(action.payload as FetchRewindStatePayload)
             ActivityLogAction.FETCHED_REWIND_STATE ->
                 storeRewindState(action.payload as FetchedRewindStatePayload, actionType)
@@ -50,9 +49,9 @@ class ActivityLogStore
         return activityLogSqlUtils.getActivitiesForSite(site, order)
     }
 
-    fun getActivitiesFromDatabaseAsync(site: SiteModel, ascending: Boolean = true) = async {
+    fun loadActivities(site: SiteModel, ascending: Boolean = true): List<ActivityLogModel> {
         val order = if (ascending) SelectQuery.ORDER_ASCENDING else SelectQuery.ORDER_DESCENDING
-        return@async activityLogSqlUtils.getActivitiesForSite(site, order)
+        return activityLogSqlUtils.getActivitiesForSite(site, order)
     }
 
     fun getActivityLogItemByRewindId(rewindId: String): ActivityLogModel? {
@@ -82,18 +81,13 @@ class ActivityLogStore
         activityLogRestClient.fetchActivity(fetchActivityLogPayload.site, ACTIVITY_LOG_PAGE_SIZE, offset)
     }
 
-    suspend fun fetchActivitiesAsync(fetchActivityLogPayload: FetchActivityLogPayload): OnActivityLogFetched {
+    suspend fun requestFreshActivities(site: SiteModel, loadMore: Boolean): OnActivityLogFetched {
         var offset = 0
-        if (fetchActivityLogPayload.loadMore) {
-            offset = activityLogSqlUtils.getActivitiesForSite(
-                    fetchActivityLogPayload.site,
-                    SelectQuery.ORDER_ASCENDING
-            ).size
+        if (loadMore) {
+            offset = activityLogSqlUtils.getActivitiesForSite(site, SelectQuery.ORDER_ASCENDING).size
         }
-        val result = activityLogRestClient.fetchActivityAsync(fetchActivityLogPayload.site,
-                ACTIVITY_LOG_PAGE_SIZE, offset)
-
-        return storeActivityLogAsync(result.payload, result.type as ActivityLogAction)
+        val fetchResult = activityLogRestClient.fetchActivities(site, ACTIVITY_LOG_PAGE_SIZE, offset)
+        return storeActivities(fetchResult.payload, fetchResult.type as ActivityLogAction)
     }
 
     private fun rewind(rewindPayload: RewindPayload) {
@@ -116,26 +110,28 @@ class ActivityLogStore
         }
     }
 
-    private suspend fun storeActivityLogAsync(
+    private suspend fun storeActivities(
         payload: FetchedActivityLogPayload,
-        action: ActivityLogAction)
-            : OnActivityLogFetched {
-        return if (payload.error != null) {
-            OnActivityLogFetched(payload.error, action)
-        } else {
-            if (payload.offset == 0) {
-                withContext(DefaultDispatcher) { activityLogSqlUtils.deleteActivityLog() }
-            }
-            val rowsAffected =
-                if (payload.activityLogModels.isNotEmpty())
-                    withContext(DefaultDispatcher) {
-                        activityLogSqlUtils.insertOrUpdateActivities(payload.site, payload.activityLogModels)
-                    }
-                else 0
-            val canLoadMore = payload.activityLogModels.isNotEmpty() &&
-                    (payload.offset + payload.number) < payload.totalItems
-            OnActivityLogFetched(rowsAffected, canLoadMore, action)
+        action: ActivityLogAction
+    ): OnActivityLogFetched = withContext(CommonPool) {
+        if (payload.error != null) {
+            return@withContext OnActivityLogFetched(payload.error, action)
         }
+
+        if (payload.offset == 0) {
+            activityLogSqlUtils.deleteActivityLog()
+        }
+
+        val rowsAffected =
+                if (payload.activityLogModels.isNotEmpty())
+                    activityLogSqlUtils.insertOrUpdateActivities(payload.site, payload.activityLogModels)
+                else
+                    0
+
+        val canLoadMore = payload.activityLogModels.isNotEmpty() &&
+                (payload.offset + payload.number) < payload.totalItems
+
+        return@withContext OnActivityLogFetched(rowsAffected, canLoadMore, action)
     }
 
     private fun storeRewindState(payload: FetchedRewindStatePayload, action: ActivityLogAction) {
