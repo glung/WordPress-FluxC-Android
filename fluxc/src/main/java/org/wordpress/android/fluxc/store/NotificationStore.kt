@@ -24,6 +24,8 @@ constructor(
     private val notificationRestClient: NotificationRestClient
 ) : Store(dispatcher) {
     companion object {
+        const val WPCOM_PUSH_DEVICE_UUID = "NOTIFICATIONS_UUID_PREF_KEY"
+        const val WPCOM_PUSH_DEVICE_TOKEN = "NOTIFICATIONS_TOKEN_PREF_KEY"
         const val WPCOM_PUSH_DEVICE_SERVER_ID = "NOTIFICATIONS_SERVER_ID_PREF_KEY"
     }
 
@@ -35,6 +37,10 @@ constructor(
         val deviceId: String? = null
     ) : Payload<DeviceRegistrationError>() {
         constructor(error: DeviceRegistrationError, deviceId: String? = null) : this(deviceId) { this.error = error }
+    }
+
+    class UnregisterDeviceResponsePayload() : Payload<DeviceUnregistrationError>() {
+        constructor(error: DeviceUnregistrationError) : this() { this.error = error }
     }
 
     class DeviceRegistrationError(
@@ -52,16 +58,28 @@ constructor(
         }
     }
 
+    class DeviceUnregistrationError(
+        val type: DeviceUnregistrationErrorType = DeviceUnregistrationErrorType.GENERIC_ERROR,
+        val message: String = ""
+    ) : OnChangedError
+
+    enum class DeviceUnregistrationErrorType { GENERIC_ERROR; }
+
     // OnChanged events
     class OnDeviceRegistered(val deviceId: String?) : OnChanged<DeviceRegistrationError>()
+
+    class OnDeviceUnregistered() : OnChanged<DeviceUnregistrationError>()
 
     @Subscribe(threadMode = ThreadMode.ASYNC)
     override fun onAction(action: Action<*>) {
         val actionType = action.type as? NotificationAction ?: return
         when (actionType) {
             NotificationAction.REGISTER_DEVICE -> registerDevice(action.payload as RegisterDevicePayload)
+            NotificationAction.UNREGISTER_DEVICE -> unregisterDevice()
             NotificationAction.REGISTERED_DEVICE ->
                 handleRegisteredDevice(action.payload as RegisterDeviceResponsePayload)
+            NotificationAction.UNREGISTERED_DEVICE ->
+                handleUnregisteredDevice(action.payload as UnregisterDeviceResponsePayload)
         }
     }
 
@@ -71,6 +89,11 @@ constructor(
 
     private fun registerDevice(payload: RegisterDevicePayload) {
         notificationRestClient.registerDeviceForPushNotifications(payload.params)
+    }
+
+    private fun unregisterDevice() {
+        val deviceId = PreferenceUtils.getFluxCPreferences(context).getString(WPCOM_PUSH_DEVICE_SERVER_ID, "")
+        notificationRestClient.unregisterDeviceForPushNotifications(deviceId)
     }
 
     private fun handleRegisteredDevice(payload: RegisterDeviceResponsePayload) {
@@ -93,5 +116,21 @@ constructor(
         }
 
         emitChange(onDeviceRegistered)
+    }
+
+    private fun handleUnregisteredDevice(payload: UnregisterDeviceResponsePayload) {
+        val onDeviceUnregistered = OnDeviceUnregistered()
+
+        PreferenceUtils.getFluxCPreferences(context).edit().remove(WPCOM_PUSH_DEVICE_SERVER_ID).apply()
+        if (payload.isError) {
+            with (payload.error) {
+                AppLog.e(T.NOTIFS, "Unregister device action failed: $type - $message")
+            }
+            onDeviceUnregistered.error = payload.error
+        } else {
+            AppLog.i(T.NOTIFS, "Unregister device action succeeded")
+        }
+
+        emitChange(onDeviceUnregistered)
     }
 }
